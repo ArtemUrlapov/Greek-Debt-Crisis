@@ -1,0 +1,1969 @@
+---
+title: "Greek Debt Crisis"
+author: "Artem Urlapov Sedova"
+date: "2025-02-14"
+output: html_document
+---
+
+```{r}
+
+library(rvest)
+library(xml2)
+library(stringr)
+library(httr)
+library(jsonlite)
+library(lubridate)
+library(tidyverse)
+library(openxlsx)
+library(readxl)
+library(syuzhet)
+
+```
+
+***Part I - Data Extraction***
+
+1.1.1 El País (2011)
+
+```{r}
+
+StartDateGreece <- as.Date("2011-05-25")
+
+DailyElPaisGreeceHeadline <- function(domain, date) {
+  Sys.sleep(sample(seq(22.5, 35, by = 0.1), 1))
+  RandomPauseCap <- sample(seq(25, 55, by = 0.1), 1)
+  WebArchiveURL <- "http://web.archive.org/cdx/search/cdx?url="
+  
+  ElPaisGreeceOutputURL <-
+    RETRY("GET", WebArchiveURL, timeout(sample(seq(60, 120, by = 0.1), 1)),
+          query = list(url = domain, 
+                       from = format(date, "%Y%m%d"), 
+                       to = format(date + days(1), "%Y%m%d"), 
+                       output = "json"), 
+          times = 90, pause_cap = RandomPauseCap)
+  
+  ElPaisGreeceOutputList <- fromJSON(content(ElPaisGreeceOutputURL, "text", encoding = "UTF-8"))
+  
+  if (length(ElPaisGreeceOutputList) <= 1) {
+    cat("No snapshots available for", date, "\n")
+    return(NA)
+  }
+  
+  ElPaisGreeceHeadlines <- as.data.frame(ElPaisGreeceOutputList[-1, ], stringsAsFactors = FALSE)
+  colnames(ElPaisGreeceHeadlines) <- ElPaisGreeceOutputList[1, ]
+  
+  DesiredDateGreece <- format(date, "%Y%m%d")
+  
+  FilteredElPaisGreeceHeadlines <- ElPaisGreeceHeadlines[
+    substr(ElPaisGreeceHeadlines$timestamp, 1, 8) == DesiredDateGreece, ]
+  
+  if (nrow(FilteredElPaisGreeceHeadlines) == 0) {
+    cat("No valid headlines found for", date, "\n")
+    return(NA)
+  }
+  
+  RandomElPaisGreeceHeadline <- FilteredElPaisGreeceHeadlines[
+    sample(1:nrow(FilteredElPaisGreeceHeadlines), 1), ]
+  
+  TimestampGreece <- RandomElPaisGreeceHeadline$timestamp
+  OriginalElPaisGreeceURL <- RandomElPaisGreeceHeadline$urlkey
+  
+  RegularElPaisGreeceURL <- gsub("com,elpais)/", "elpais.com/", OriginalElPaisGreeceURL, fixed = TRUE) 
+  
+  RetrievedElPaisGreeceURL <- paste0("https://web.archive.org/web/",
+                                     TimestampGreece, "/",
+                                     RegularElPaisGreeceURL)
+  
+  cat("Retrieved from El País:", RetrievedElPaisGreeceURL, "\n")
+  
+  return(RetrievedElPaisGreeceURL)
+}
+
+GreeceSpanishVectorOfWords <- c("Grecia", "griego", "griega")
+
+ElPaisGreeceDynamicDataFrame <- data.frame(ElPaisGreeceDate = character(0),
+                                           ElPaisGreeceHeadline = character(0),
+                                           ElPaisGreeceWeighting = numeric(0),
+                                           ElPaisGreeceTag = character(0))
+
+for (i in 0:160) {
+  Sys.sleep(sample(seq(35, 60, by = 0.1), 1)) 
+  
+  CurrentDateGreece <- StartDateGreece + days(i)
+  ElPaisGreeceTargetURL <- DailyElPaisGreeceHeadline("www.elpais.com", CurrentDateGreece) 
+  
+  if (is.na(ElPaisGreeceTargetURL)) next
+  
+  ElPaisGreeceWebsite <- read_html(ElPaisGreeceTargetURL)
+  
+  ElPaisGreeceMaxWeighting <- 0
+  ElPaisGreeceMaxWeightingRow <- NULL
+  
+  for (ElPaisGreeceTag in c("h1", "h2", "h3")) {
+    ElPaisGreeceHeadlines <- ElPaisGreeceWebsite %>% html_nodes(ElPaisGreeceTag) %>%
+      html_text(trim = TRUE)
+    
+    for (ElPaisGreeceHeadline in ElPaisGreeceHeadlines) {
+      GreeceSpanishVectorOfWordsMatch <- any(str_detect(
+        ElPaisGreeceHeadline, regex(paste(GreeceSpanishVectorOfWords, collapse = "|"), ignore_case = TRUE)
+      ))
+      
+      if (GreeceSpanishVectorOfWordsMatch) {
+        ElPaisGreeceRawWeighting <- length(ElPaisGreeceHeadlines) - 
+          match(ElPaisGreeceHeadline, ElPaisGreeceHeadlines) + 1
+        ElPaisGreeceNormalisedWeighting <- ElPaisGreeceRawWeighting / length(ElPaisGreeceHeadlines) 
+
+        if (ElPaisGreeceNormalisedWeighting > ElPaisGreeceMaxWeighting) {
+          ElPaisGreeceMaxWeighting <- ElPaisGreeceNormalisedWeighting
+          ElPaisGreeceMaxWeightingRow <- data.frame(
+            ElPaisGreeceDate = as.character(CurrentDateGreece),
+            ElPaisGreeceHeadline = ElPaisGreeceHeadline,
+            ElPaisGreeceWeighting = ElPaisGreeceNormalisedWeighting, 
+            ElPaisGreeceTag = ElPaisGreeceTag
+          )
+        }
+      }
+    }
+  }
+  
+  if (!is.null(ElPaisGreeceMaxWeightingRow)) {
+    ElPaisGreeceDynamicDataFrame <- rbind(ElPaisGreeceDynamicDataFrame, ElPaisGreeceMaxWeightingRow)
+  } else {
+    ElPaisGreeceNARow <- data.frame(
+      ElPaisGreeceDate = as.character(CurrentDateGreece),
+      ElPaisGreeceHeadline = NA,
+      ElPaisGreeceWeighting = 0,
+      ElPaisGreeceTag = NA
+    )
+    ElPaisGreeceDynamicDataFrame <- rbind(ElPaisGreeceDynamicDataFrame, ElPaisGreeceNARow)
+  }
+}
+
+head(ElPaisGreeceDynamicDataFrame)
+tail(ElPaisGreeceDynamicDataFrame)
+
+```
+
+```{r}
+
+write.xlsx(ElPaisGreeceDynamicDataFrame, "ElPaisGreece2011.xlsx")
+
+```
+
+
+1.1.2 El País (2015)
+
+```{r}
+
+StartDateGreece <- as.Date("2015-01-27")
+
+DailyElPaisGreeceHeadline <- function(domain, date) {
+  Sys.sleep(sample(seq(22.5, 35, by = 0.1), 1))
+  RandomPauseCap <- sample(seq(25, 55, by = 0.1), 1)
+  WebArchiveURL <- "http://web.archive.org/cdx/search/cdx?url="
+  
+  ElPaisGreeceOutputURL <-
+    RETRY("GET", WebArchiveURL, timeout(sample(seq(60, 120, by = 0.1), 1)),
+                query = list(url = domain, timestamp = format(date, "%Y%m%d"),
+                             output = "json"), times = 90, pause_cap = RandomPauseCap)
+  
+  ElPaisGreeceOutputList <-
+    fromJSON(content(ElPaisGreeceOutputURL, "text", encoding = "UTF-8"))
+  
+  ElPaisGreeceHeadlines <- as.data.frame(ElPaisGreeceOutputList[-1, ],
+                                       stringsAsFactors = FALSE)
+  
+  colnames(ElPaisGreeceHeadlines) <- ElPaisGreeceOutputList[1, ]
+  
+  DesiredDateGreece <- format(date, "%Y%m%d")
+  
+  FilteredElPaisGreeceHeadlines <-
+  ElPaisGreeceHeadlines[grepl(DesiredDateGreece, ElPaisGreeceHeadlines$timestamp,
+                                  fixed = TRUE), ]
+  
+  RandomElPaisGreeceHeadline <-
+    FilteredElPaisGreeceHeadlines[sample(1:nrow(FilteredElPaisGreeceHeadlines), 1), ]
+  
+  TimestampGreece <- RandomElPaisGreeceHeadline$timestamp
+  
+  OriginalElPaisGreeceURL <- RandomElPaisGreeceHeadline$urlkey
+  
+  RegularElPaisGreeceURL <- gsub("com,elpais)/", "elpais.com/",
+                                OriginalElPaisGreeceURL, fixed = TRUE) 
+  
+  RetrievedElPaisGreeceURL <- paste0("https://web.archive.org/web/",
+                                   TimestampGreece, "/",
+                                    RegularElPaisGreeceURL)
+  
+  cat("Retrieved from El País:", RetrievedElPaisGreeceURL, "\n")
+  
+  return(RetrievedElPaisGreeceURL)
+}
+
+GreeceSpanishVectorOfWords <- c("Grecia", "griego", "griega")
+
+ElPaisGreeceDynamicDataFrame <- data.frame(ElPaisGreeceDate = character(0),
+                                          ElPaisGreeceHeadline = character(0),
+                                          ElPaisGreeceWeighting = numeric(0),
+                                          ElPaisGreeceTag = character(0))
+
+for (i in 0:160) {
+  Sys.sleep(sample(seq(35, 60, by = 0.1), 1)) 
+  
+  CurrentDateGreece <- StartDateGreece + days(i)
+  ElPaisGreeceTargetURL <- DailyElPaisGreeceHeadline("www.elpais.com",
+                                                   CurrentDateGreece) 
+  
+  ElPaisGreeceWebsite <- read_html(ElPaisGreeceTargetURL)
+  
+  ElPaisGreeceMaxWeighting <- 0
+  ElPaisGreeceMaxWeightingRow <- NULL
+  
+  for (ElPaisGreeceTag in c("h1", "h2", "h3")) {
+    ElPaisGreeceHeadlines <- ElPaisGreeceWebsite %>% html_nodes(ElPaisGreeceTag) %>%
+      html_text(trim = TRUE)
+    
+    for (ElPaisGreeceHeadline in ElPaisGreeceHeadlines) {
+      GreeceSpanishVectorOfWordsMatch <- any(str_detect(ElPaisGreeceHeadline, regex(paste(GreeceSpanishVectorOfWords, collapse = "|"),
+                                                         ignore_case = TRUE)))
+      
+      if (GreeceSpanishVectorOfWordsMatch) {
+        ElPaisGreeceRawWeighting <-
+          length(ElPaisGreeceHeadlines) - match(ElPaisGreeceHeadline,
+                                              ElPaisGreeceHeadlines) + 1
+        ElPaisGreeceNormalisedWeighting <- ElPaisGreeceRawWeighting / length(ElPaisGreeceHeadlines) 
+
+        if (ElPaisGreeceNormalisedWeighting > ElPaisGreeceMaxWeighting) {
+          ElPaisGreeceMaxWeighting <- ElPaisGreeceNormalisedWeighting
+          ElPaisGreeceMaxWeightingRow <- data.frame(ElPaisGreeceDate =
+                                                    as.character(CurrentDateGreece),
+                                                   ElPaisGreeceHeadline =
+                                                    ElPaisGreeceHeadline,
+                                                   ElPaisGreeceWeighting = 
+                                                    ElPaisGreeceNormalisedWeighting, 
+                                                   ElPaisGreeceTag = ElPaisGreeceTag)
+        }
+      }
+    }
+  }
+  
+  if (!is.null(ElPaisGreeceMaxWeightingRow)) {
+    ElPaisGreeceDynamicDataFrame <- rbind(ElPaisGreeceDynamicDataFrame, ElPaisGreeceMaxWeightingRow)
+  } else {
+    ElPaisGreeceNARow <-
+      data.frame(ElPaisGreeceDate = as.character(CurrentDateGreece),
+                                   ElPaisGreeceHeadline = NA,
+                                   ElPaisGreeceWeighting = 0,
+                                   ElPaisGreeceTag = NA)
+    ElPaisGreeceDynamicDataFrame <- rbind(ElPaisGreeceDynamicDataFrame,
+                                         ElPaisGreeceNARow)
+  }
+}
+
+head(ElPaisGreeceDynamicDataFrame)
+tail(ElPaisGreeceDynamicDataFrame)
+
+```
+
+```{r}
+
+write.xlsx(ElPaisGreeceDynamicDataFrame, "ElPaisGreece2015.xlsx")
+
+```
+
+
+1.2.1 El Mundo (2011)
+
+```{r}
+
+StartDateGreece <- as.Date("2011-05-25")
+
+DailyElMundoGreeceHeadline <- function(domain, date) {
+  Sys.sleep(sample(seq(22.5, 35, by = 0.1), 1))
+  RandomPauseCap <- sample(seq(25, 55, by = 0.1), 1)
+  WebArchiveURL <- "http://web.archive.org/cdx/search/cdx?url="
+  
+  ElMundoGreeceOutputURL <-
+    RETRY("GET", WebArchiveURL, timeout(sample(seq(60, 120, by = 0.1), 1)),
+          query = list(url = domain, 
+                       from = format(date, "%Y%m%d"), 
+                       to = format(date + days(1), "%Y%m%d"), 
+                       output = "json"), 
+          times = 90, pause_cap = RandomPauseCap)
+  
+  ElMundoGreeceOutputList <- fromJSON(content(ElMundoGreeceOutputURL, "text", encoding = "UTF-8"))
+  
+  if (length(ElMundoGreeceOutputList) <= 1) {
+    cat("No snapshots available for", date, "\n")
+    return(NA)
+  }
+  
+  ElMundoGreeceHeadlines <- as.data.frame(ElMundoGreeceOutputList[-1, ], stringsAsFactors = FALSE)
+  colnames(ElMundoGreeceHeadlines) <- ElMundoGreeceOutputList[1, ]
+  
+  DesiredDateGreece <- format(date, "%Y%m%d")
+  
+  FilteredElMundoGreeceHeadlines <- ElMundoGreeceHeadlines[
+    substr(ElMundoGreeceHeadlines$timestamp, 1, 8) == DesiredDateGreece, ]
+  
+  if (nrow(FilteredElMundoGreeceHeadlines) == 0) {
+    cat("No valid headlines found for", date, "\n")
+    return(NA)
+  }
+  
+  RandomElMundoGreeceHeadline <- FilteredElMundoGreeceHeadlines[
+    sample(1:nrow(FilteredElMundoGreeceHeadlines), 1), ]
+  
+  TimestampGreece <- RandomElMundoGreeceHeadline$timestamp
+  OriginalElMundoGreeceURL <- RandomElMundoGreeceHeadline$urlkey
+  
+  RegularElMundoGreeceURL <- gsub("es,elmundo)/", "elmundo.es/", OriginalElMundoGreeceURL, fixed = TRUE) 
+  
+  RetrievedElMundoGreeceURL <- paste0("https://web.archive.org/web/",
+                                     TimestampGreece, "/",
+                                     RegularElMundoGreeceURL)
+  
+  cat("Retrieved from El Mundo:", RetrievedElMundoGreeceURL, "\n")
+  
+  return(RetrievedElMundoGreeceURL)
+}
+
+GreeceSpanishVectorOfWords <- c("Grecia", "griego", "griega")
+
+ElMundoGreeceDynamicDataFrame <- data.frame(ElMundoGreeceDate = character(0),
+                                           ElMundoGreeceHeadline = character(0),
+                                           ElMundoGreeceWeighting = numeric(0),
+                                           ElMundoGreeceTag = character(0))
+
+for (i in 0:160) {
+  Sys.sleep(sample(seq(35, 60, by = 0.1), 1)) 
+  
+  CurrentDateGreece <- StartDateGreece + days(i)
+  ElMundoGreeceTargetURL <- DailyElMundoGreeceHeadline("www.elmundo.es", CurrentDateGreece) 
+  
+  if (is.na(ElMundoGreeceTargetURL)) next
+  
+  ElMundoGreeceWebsite <- read_html(ElMundoGreeceTargetURL)
+  
+  ElMundoGreeceMaxWeighting <- 0
+  ElMundoGreeceMaxWeightingRow <- NULL
+  
+  for (ElMundoGreeceTag in c("h1", "h2", "h3")) {
+    ElMundoGreeceHeadlines <- ElMundoGreeceWebsite %>% html_nodes(ElMundoGreeceTag) %>%
+      html_text(trim = TRUE)
+    
+    for (ElMundoGreeceHeadline in ElMundoGreeceHeadlines) {
+      GreeceSpanishVectorOfWordsMatch <- any(str_detect(
+        ElMundoGreeceHeadline, regex(paste(GreeceSpanishVectorOfWords, collapse = "|"), ignore_case = TRUE)
+      ))
+      
+      if (GreeceSpanishVectorOfWordsMatch) {
+        ElMundoGreeceRawWeighting <- length(ElMundoGreeceHeadlines) - 
+          match(ElMundoGreeceHeadline, ElMundoGreeceHeadlines) + 1
+        ElMundoGreeceNormalisedWeighting <- ElMundoGreeceRawWeighting / length(ElMundoGreeceHeadlines) 
+
+        if (ElMundoGreeceNormalisedWeighting > ElMundoGreeceMaxWeighting) {
+          ElMundoGreeceMaxWeighting <- ElMundoGreeceNormalisedWeighting
+          ElMundoGreeceMaxWeightingRow <- data.frame(
+            ElMundoGreeceDate = as.character(CurrentDateGreece),
+            ElMundoGreeceHeadline = ElMundoGreeceHeadline,
+            ElMundoGreeceWeighting = ElMundoGreeceNormalisedWeighting, 
+            ElMundoGreeceTag = ElMundoGreeceTag
+          )
+        }
+      }
+    }
+  }
+  
+  if (!is.null(ElMundoGreeceMaxWeightingRow)) {
+    ElMundoGreeceDynamicDataFrame <- rbind(ElMundoGreeceDynamicDataFrame, ElMundoGreeceMaxWeightingRow)
+  } else {
+    ElMundoGreeceNARow <- data.frame(
+      ElMundoGreeceDate = as.character(CurrentDateGreece),
+      ElMundoGreeceHeadline = NA,
+      ElMundoGreeceWeighting = 0,
+      ElMundoGreeceTag = NA
+    )
+    ElMundoGreeceDynamicDataFrame <- rbind(ElMundoGreeceDynamicDataFrame, ElMundoGreeceNARow)
+  }
+}
+
+head(ElMundoGreeceDynamicDataFrame)
+tail(ElMundoGreeceDynamicDataFrame)
+
+```
+
+
+```{r}
+
+write.xlsx(ElMundoGreeceDynamicDataFrame, "ElMundoGreece2011.xlsx")
+
+```
+
+
+1.2.2 El Mundo (2015)
+
+```{r}
+
+StartDateGreece <- as.Date("2015-01-27")
+
+DailyElMundoGreeceHeadline <- function(domain, date) {
+  Sys.sleep(sample(seq(22.5, 35, by = 0.1), 1))
+  RandomPauseCap <- sample(seq(25, 55, by = 0.1), 1)
+  WebArchiveURL <- "http://web.archive.org/cdx/search/cdx?url="
+  
+  ElMundoGreeceOutputURL <-
+    RETRY("GET", WebArchiveURL, timeout(sample(seq(60, 120, by = 0.1), 1)),
+                query = list(url = domain, timestamp = format(date, "%Y%m%d"),
+                             output = "json"), times = 90, pause_cap = RandomPauseCap)
+  
+  ElMundoGreeceOutputList <-
+    fromJSON(content(ElMundoGreeceOutputURL, "text", encoding = "UTF-8"))
+  
+  ElMundoGreeceHeadlines <- as.data.frame(ElMundoGreeceOutputList[-1, ],
+                                       stringsAsFactors = FALSE)
+  
+  colnames(ElMundoGreeceHeadlines) <- ElMundoGreeceOutputList[1, ]
+  
+  DesiredDateGreece <- format(date, "%Y%m%d")
+  
+  FilteredElMundoGreeceHeadlines <-
+  ElMundoGreeceHeadlines[grepl(DesiredDateGreece, ElMundoGreeceHeadlines$timestamp,
+                                  fixed = TRUE), ]
+  
+  RandomElMundoGreeceHeadline <-
+    FilteredElMundoGreeceHeadlines[sample(1:nrow(FilteredElMundoGreeceHeadlines), 1), ]
+  
+  TimestampGreece <- RandomElMundoGreeceHeadline$timestamp
+  
+  OriginalElMundoGreeceURL <- RandomElMundoGreeceHeadline$urlkey
+  
+  RegularElMundoGreeceURL <- gsub("es,elmundo)/", "elmundo.es/",
+                                OriginalElMundoGreeceURL, fixed = TRUE) 
+  
+  RetrievedElMundoGreeceURL <- paste0("https://web.archive.org/web/",
+                                   TimestampGreece, "/",
+                                    RegularElMundoGreeceURL)
+  
+  cat("Retrieved from El Mundo:", RetrievedElMundoGreeceURL, "\n")
+  
+  return(RetrievedElMundoGreeceURL)
+}
+
+GreeceSpanishVectorOfWords <- c("Grecia", "griego", "griega")
+
+ElMundoGreeceDynamicDataFrame <- data.frame(ElMundoGreeceDate = character(0),
+                                          ElMundoGreeceHeadline = character(0),
+                                          ElMundoGreeceWeighting = numeric(0),
+                                          ElMundoGreeceTag = character(0))
+
+for (i in 0:160) {
+  Sys.sleep(sample(seq(35, 60, by = 0.1), 1)) 
+  
+  CurrentDateGreece <- StartDateGreece + days(i)
+  ElMundoGreeceTargetURL <- DailyElMundoGreeceHeadline("www.elmundo.es",
+                                                   CurrentDateGreece) 
+  
+  ElMundoGreeceWebsite <- read_html(ElMundoGreeceTargetURL)
+  
+  ElMundoGreeceMaxWeighting <- 0
+  ElMundoGreeceMaxWeightingRow <- NULL
+  
+  for (ElMundoGreeceTag in c("h1", "h2", "h3")) {
+    ElMundoGreeceHeadlines <- ElMundoGreeceWebsite %>% html_nodes(ElMundoGreeceTag) %>%
+      html_text(trim = TRUE)
+    
+    for (ElMundoGreeceHeadline in ElMundoGreeceHeadlines) {
+      GreeceSpanishVectorOfWordsMatch <- any(str_detect(ElMundoGreeceHeadline, regex(paste(GreeceSpanishVectorOfWords, collapse = "|"),
+                                                         ignore_case = TRUE)))
+      
+      if (GreeceSpanishVectorOfWordsMatch) {
+        ElMundoGreeceRawWeighting <-
+          length(ElMundoGreeceHeadlines) - match(ElMundoGreeceHeadline,
+                                              ElMundoGreeceHeadlines) + 1
+        ElMundoGreeceNormalisedWeighting <- ElMundoGreeceRawWeighting / length(ElMundoGreeceHeadlines) 
+
+        if (ElMundoGreeceNormalisedWeighting > ElMundoGreeceMaxWeighting) {
+          ElMundoGreeceMaxWeighting <- ElMundoGreeceNormalisedWeighting
+          ElMundoGreeceMaxWeightingRow <- data.frame(ElMundoGreeceDate =
+                                                    as.character(CurrentDateGreece),
+                                                   ElMundoGreeceHeadline =
+                                                    ElMundoGreeceHeadline,
+                                                   ElMundoGreeceWeighting = 
+                                                    ElMundoGreeceNormalisedWeighting, 
+                                                   ElMundoGreeceTag = ElMundoGreeceTag)
+        }
+      }
+    }
+  }
+  
+  if (!is.null(ElMundoGreeceMaxWeightingRow)) {
+    ElMundoGreeceDynamicDataFrame <- rbind(ElMundoGreeceDynamicDataFrame, ElMundoGreeceMaxWeightingRow)
+  } else {
+    ElMundoGreeceNARow <-
+      data.frame(ElMundoGreeceDate = as.character(CurrentDateGreece),
+                                   ElMundoGreeceHeadline = NA,
+                                   ElMundoGreeceWeighting = 0,
+                                   ElMundoGreeceTag = NA)
+    ElMundoGreeceDynamicDataFrame <- rbind(ElMundoGreeceDynamicDataFrame,
+                                         ElMundoGreeceNARow)
+  }
+}
+
+head(ElMundoGreeceDynamicDataFrame)
+tail(ElMundoGreeceDynamicDataFrame)
+
+```
+
+```{r}
+
+write.xlsx(ElMundoGreeceDynamicDataFrame, "ElMundoGreece2015.xlsx")
+
+```
+
+
+
+1.3.1 Corriere della Sera (2011)
+
+```{r}
+
+StartDateGreece <- as.Date("2011-05-25")
+
+DailyCDSGreeceHeadline <- function(domain, date) {
+  Sys.sleep(sample(seq(22.5, 35, by = 0.1), 1))
+  RandomPauseCap <- sample(seq(25, 55, by = 0.1), 1)
+  WebArchiveURL <- "http://web.archive.org/cdx/search/cdx?url="
+  
+  CDSGreeceOutputURL <-
+    RETRY("GET", WebArchiveURL, timeout(sample(seq(60, 120, by = 0.1), 1)),
+          query = list(url = domain, 
+                       from = format(date, "%Y%m%d"), 
+                       to = format(date + days(1), "%Y%m%d"), 
+                       output = "json"), 
+          times = 90, pause_cap = RandomPauseCap)
+  
+  CDSGreeceOutputList <- fromJSON(content(CDSGreeceOutputURL, "text", encoding = "UTF-8"))
+  
+  if (length(CDSGreeceOutputList) <= 1) {
+    cat("No snapshots available for", date, "\n")
+    return(NA)
+  }
+  
+  if (!is.matrix(CDSGreeceOutputList) || ncol(CDSGreeceOutputList) < 7) {
+    cat("Unexpected API response structure for", date, "\n")
+    return(NA)
+  }
+  
+  ColumnNames <- CDSGreeceOutputList[1, ]
+  CDSGreeceHeadlines <- as.data.frame(CDSGreeceOutputList[-1, ], stringsAsFactors = FALSE)
+  
+  if (length(ColumnNames) != ncol(CDSGreeceHeadlines)) {
+    cat("Column names do not match the number of columns for", date, "\n")
+    return(NA)
+  }
+  
+  colnames(CDSGreeceHeadlines) <- ColumnNames
+  
+  DesiredDateGreece <- format(date, "%Y%m%d")
+  
+  FilteredCDSGreeceHeadlines <- CDSGreeceHeadlines[
+    substr(CDSGreeceHeadlines$timestamp, 1, 8) == DesiredDateGreece, ]
+  
+  if (nrow(FilteredCDSGreeceHeadlines) == 0) {
+    cat("No valid headlines found for", date, "\n")
+    return(NA)
+  }
+  
+  ValidCDSGreeceHeadlines <- FilteredCDSGreeceHeadlines[
+    FilteredCDSGreeceHeadlines$mimetype != "warc/revisit" & 
+    FilteredCDSGreeceHeadlines$statuscode != "301", ]
+  
+  if (nrow(ValidCDSGreeceHeadlines) == 0) {
+    cat("No valid content snapshots available for", date, "\n")
+    return(NA)
+  }
+  
+  for (attempt in 1:nrow(ValidCDSGreeceHeadlines)) {
+    RandomCDSGreeceHeadline <- ValidCDSGreeceHeadlines[attempt, ]
+    
+    TimestampGreece <- RandomCDSGreeceHeadline$timestamp
+    OriginalCDSGreeceURL <- RandomCDSGreeceHeadline$urlkey
+    
+    RegularCDSGreeceURL <- gsub("it,corriere)/", "corriere.it/", OriginalCDSGreeceURL, fixed = TRUE) 
+    
+    RetrievedCDSGreeceURL <- paste0("https://web.archive.org/web/",
+                                    TimestampGreece, "/",
+                                    RegularCDSGreeceURL)
+    
+    SnapshotCheck <- RETRY("GET", RetrievedCDSGreeceURL, timeout(10), times = 3)
+    if (status_code(SnapshotCheck) == 200) {
+      cat("Retrieved from CDS:", RetrievedCDSGreeceURL, "\n")
+      return(RetrievedCDSGreeceURL)
+    } else {
+      cat("Snapshot", RetrievedCDSGreeceURL, "is a redirect. Trying next snapshot...\n")
+    }
+  }
+  
+  cat("No valid snapshots found for", date, "\n")
+  return(NA)
+}
+
+GreeceItalianVectorOfWords <- c("grec")
+
+CDSGreeceDynamicDataFrame <- data.frame(
+  CDSGreeceDate = character(0),
+  CDSGreeceHeadline = character(0),
+  CDSGreeceWeighting = numeric(0),
+  CDSGreeceTag = character(0)
+)
+
+for (i in 0:160) {
+  Sys.sleep(sample(seq(35, 60, by = 0.1), 1)) 
+  
+  CurrentDateGreece <- StartDateGreece + days(i)
+  CDSGreeceTargetURL <- DailyCDSGreeceHeadline("www.corriere.it", CurrentDateGreece) 
+  
+  if (is.na(CDSGreeceTargetURL)) next
+  
+  CDSGreeceWebsite <- read_html(CDSGreeceTargetURL)
+  
+  CDSGreeceMaxWeighting <- 0
+  CDSGreeceMaxWeightingRow <- NULL
+  
+  for (CDSGreeceTag in c("h1", "h2", "h3")) {
+    CDSGreeceHeadlines <- CDSGreeceWebsite %>% html_nodes(CDSGreeceTag) %>% html_text(trim = TRUE)
+    
+    for (CDSGreeceHeadline in CDSGreeceHeadlines) {
+      if (any(str_detect(CDSGreeceHeadline, regex(paste(GreeceItalianVectorOfWords, collapse = "|"), ignore_case = TRUE)))) {
+        CDSGreeceRawWeighting <- length(CDSGreeceHeadlines) - match(CDSGreeceHeadline, CDSGreeceHeadlines) + 1
+        CDSGreeceNormalisedWeighting <- CDSGreeceRawWeighting / length(CDSGreeceHeadlines)
+        
+        if (CDSGreeceNormalisedWeighting > CDSGreeceMaxWeighting) {
+          CDSGreeceMaxWeighting <- CDSGreeceNormalisedWeighting
+          CDSGreeceMaxWeightingRow <- data.frame(
+            CDSGreeceDate = as.character(CurrentDateGreece),
+            CDSGreeceHeadline = CDSGreeceHeadline,
+            CDSGreeceWeighting = CDSGreeceNormalisedWeighting,
+            CDSGreeceTag = CDSGreeceTag
+          )
+        }
+      }
+    }
+  }
+  
+  if (!is.null(CDSGreeceMaxWeightingRow)) {
+    CDSGreeceDynamicDataFrame <- rbind(CDSGreeceDynamicDataFrame, CDSGreeceMaxWeightingRow)
+  } else {
+    CDSGreeceNARow <- data.frame(
+      CDSGreeceDate = as.character(CurrentDateGreece),
+      CDSGreeceHeadline = NA,
+      CDSGreeceWeighting = 0,
+      CDSGreeceTag = NA
+    )
+    CDSGreeceDynamicDataFrame <- rbind(CDSGreeceDynamicDataFrame, CDSGreeceNARow)
+  }
+}
+
+head(CDSGreeceDynamicDataFrame)
+tail(CDSGreeceDynamicDataFrame)
+
+```
+
+```{r}
+
+write.xlsx(CDSGreeceDynamicDataFrame, "CorriereGreece2011.xlsx")
+
+```
+
+
+
+1.3.2 Corriere della Sera (2015)
+
+```{r}
+
+StartDateGreece <- as.Date("2015-03-03")
+
+DailyCDSGreeceHeadline <- function(domain, date) {
+  Sys.sleep(sample(seq(22.5, 35, by = 0.1), 1))
+  RandomPauseCap <- sample(seq(25, 55, by = 0.1), 1)
+  WebArchiveURL <- "http://web.archive.org/cdx/search/cdx?url="
+  
+  CDSGreeceOutputURL <-
+    RETRY("GET", WebArchiveURL, timeout(sample(seq(60, 120, by = 0.1), 1)),
+                query = list(url = domain, timestamp = format(date, "%Y%m%d"),
+                             output = "json"), times = 90, pause_cap = RandomPauseCap)
+  
+  CDSGreeceOutputList <-
+    fromJSON(content(CDSGreeceOutputURL, "text", encoding = "UTF-8"))
+  
+  CDSGreeceHeadlines <- as.data.frame(CDSGreeceOutputList[-1, ],
+                                       stringsAsFactors = FALSE)
+  
+  colnames(CDSGreeceHeadlines) <- CDSGreeceOutputList[1, ]
+  
+  DesiredDateGreece <- format(date, "%Y%m%d")
+  
+  FilteredCDSGreeceHeadlines <-
+  CDSGreeceHeadlines[grepl(DesiredDateGreece, CDSGreeceHeadlines$timestamp,
+                                  fixed = TRUE), ]
+  
+  RandomCDSGreeceHeadline <-
+    FilteredCDSGreeceHeadlines[sample(1:nrow(FilteredCDSGreeceHeadlines), 1), ]
+  
+  TimestampGreece <- RandomCDSGreeceHeadline$timestamp
+  
+  OriginalCDSGreeceURL <- RandomCDSGreeceHeadline$urlkey
+  
+  RegularCDSGreeceURL <- gsub("it,corriere)/", "corriere.it/",
+                                OriginalCDSGreeceURL, fixed = TRUE) 
+  
+  RetrievedCDSGreeceURL <- paste0("https://web.archive.org/web/",
+                                   TimestampGreece, "/",
+                                    RegularCDSGreeceURL)
+  
+  cat("Retrieved from CDS:", RetrievedCDSGreeceURL, "\n")
+  
+  return(RetrievedCDSGreeceURL)
+}
+
+GreeceItalianVectorOfWords <- c("grec")
+
+CDSGreeceDynamicDataFrame <- data.frame(CDSGreeceDate = character(0),
+                                          CDSGreeceHeadline = character(0),
+                                          CDSGreeceWeighting = numeric(0),
+                                          CDSGreeceTag = character(0))
+
+for (i in 0:1) {
+  Sys.sleep(sample(seq(35, 60, by = 0.1), 1)) 
+  
+  CurrentDateGreece <- StartDateGreece + days(i)
+  CDSGreeceTargetURL <- DailyCDSGreeceHeadline("www.corriere.it",
+                                                   CurrentDateGreece) 
+  
+  CDSGreeceWebsite <- read_html(CDSGreeceTargetURL)
+  
+  CDSGreeceMaxWeighting <- 0
+  CDSGreeceMaxWeightingRow <- NULL
+  
+  for (CDSGreeceTag in c("h1", "h2", "h3")) {
+    CDSGreeceHeadlines <- CDSGreeceWebsite %>% html_nodes(CDSGreeceTag) %>%
+      html_text(trim = TRUE)
+    
+    for (CDSGreeceHeadline in CDSGreeceHeadlines) {
+      GreeceItalianVectorOfWordsMatch <- any(str_detect(CDSGreeceHeadline, regex(paste(GreeceItalianVectorOfWords, collapse = "|"),
+                                                         ignore_case = TRUE)))
+      
+      if (GreeceItalianVectorOfWordsMatch) {
+        CDSGreeceRawWeighting <-
+          length(CDSGreeceHeadlines) - match(CDSGreeceHeadline,
+                                              CDSGreeceHeadlines) + 1
+        CDSGreeceNormalisedWeighting <- CDSGreeceRawWeighting / length(CDSGreeceHeadlines) 
+
+        if (CDSGreeceNormalisedWeighting > CDSGreeceMaxWeighting) {
+          CDSGreeceMaxWeighting <- CDSGreeceNormalisedWeighting
+          CDSGreeceMaxWeightingRow <- data.frame(CDSGreeceDate =
+                                                    as.character(CurrentDateGreece),
+                                                   CDSGreeceHeadline =
+                                                    CDSGreeceHeadline,
+                                                   CDSGreeceWeighting = 
+                                                    CDSGreeceNormalisedWeighting, 
+                                                   CDSGreeceTag = CDSGreeceTag)
+        }
+      }
+    }
+  }
+  
+  if (!is.null(CDSGreeceMaxWeightingRow)) {
+    CDSGreeceDynamicDataFrame <- rbind(CDSGreeceDynamicDataFrame, CDSGreeceMaxWeightingRow)
+  } else {
+    CDSGreeceNARow <-
+      data.frame(CDSGreeceDate = as.character(CurrentDateGreece),
+                                   CDSGreeceHeadline = NA,
+                                   CDSGreeceWeighting = 0,
+                                   CDSGreeceTag = NA)
+    CDSGreeceDynamicDataFrame <- rbind(CDSGreeceDynamicDataFrame,
+                                         CDSGreeceNARow)
+  }
+}
+
+head(CDSGreeceDynamicDataFrame)
+tail(CDSGreeceDynamicDataFrame)
+
+```
+
+```{r}
+
+write.xlsx(CDSGreeceDynamicDataFrame, "CorriereGreece2015.xlsx")
+
+```
+
+
+1.4.1 La Repubblica (2011)
+
+```{r}
+
+StartDateGreece <- as.Date("2011-05-25")
+
+DailyLRGreeceHeadline <- function(domain, date) {
+  Sys.sleep(sample(seq(22.5, 35, by = 0.1), 1))
+  RandomPauseCap <- sample(seq(25, 55, by = 0.1), 1)
+  WebArchiveURL <- "http://web.archive.org/cdx/search/cdx?url="
+  
+  LRGreeceOutputURL <-
+    RETRY("GET", WebArchiveURL, timeout(sample(seq(60, 120, by = 0.1), 1)),
+          query = list(url = domain, 
+                       from = format(date, "%Y%m%d"), 
+                       to = format(date + days(1), "%Y%m%d"), 
+                       output = "json"), 
+          times = 90, pause_cap = RandomPauseCap)
+  
+  LRGreeceOutputList <- fromJSON(content(LRGreeceOutputURL, "text", encoding = "UTF-8"))
+  
+  if (length(LRGreeceOutputList) <= 1) {
+    cat("No snapshots available for", date, "\n")
+    return(NA)
+  }
+  
+  if (!is.matrix(LRGreeceOutputList) || ncol(LRGreeceOutputList) < 7) {
+    cat("Unexpected API response structure for", date, "\n")
+    return(NA)
+  }
+  
+  ColumnNames <- LRGreeceOutputList[1, ]
+  LRGreeceHeadlines <- as.data.frame(LRGreeceOutputList[-1, ], stringsAsFactors = FALSE)
+  
+  if (length(ColumnNames) != ncol(LRGreeceHeadlines)) {
+    cat("Column names do not match the number of columns for", date, "\n")
+    return(NA)
+  }
+  
+  colnames(LRGreeceHeadlines) <- ColumnNames
+  
+  DesiredDateGreece <- format(date, "%Y%m%d")
+  
+  FilteredLRGreeceHeadlines <- LRGreeceHeadlines[
+    substr(LRGreeceHeadlines$timestamp, 1, 8) == DesiredDateGreece, ]
+  
+  if (nrow(FilteredLRGreeceHeadlines) == 0) {
+    cat("No valid headlines found for", date, "\n")
+    return(NA)
+  }
+  
+  ValidLRGreeceHeadlines <- FilteredLRGreeceHeadlines[
+    FilteredLRGreeceHeadlines$mimetype != "warc/revisit" & 
+    FilteredLRGreeceHeadlines$statuscode != "301", ]
+  
+  if (nrow(ValidLRGreeceHeadlines) == 0) {
+    cat("No valid content snapshots available for", date, "\n")
+    return(NA)
+  }
+  
+  for (attempt in 1:nrow(ValidLRGreeceHeadlines)) {
+    RandomLRGreeceHeadline <- ValidLRGreeceHeadlines[attempt, ]
+    
+    TimestampGreece <- RandomLRGreeceHeadline$timestamp
+    OriginalLRGreeceURL <- RandomLRGreeceHeadline$urlkey
+    
+    RegularLRGreeceURL <- gsub("it,repubblica)/", "repubblica.it/", OriginalLRGreeceURL, fixed = TRUE) 
+    
+    RetrievedLRGreeceURL <- paste0("https://web.archive.org/web/",
+                                    TimestampGreece, "/",
+                                    RegularLRGreeceURL)
+    
+    SnapshotCheck <- RETRY("GET", RetrievedLRGreeceURL, timeout(10), times = 3)
+    if (status_code(SnapshotCheck) == 200) {
+      cat("Retrieved from LR:", RetrievedLRGreeceURL, "\n")
+      return(RetrievedLRGreeceURL)
+    } else {
+      cat("Snapshot", RetrievedLRGreeceURL, "is a redirect. Trying next snapshot...\n")
+    }
+  }
+  
+  cat("No valid snapshots found for", date, "\n")
+  return(NA)
+}
+
+GreeceItalianVectorOfWords <- c("grec")
+
+LRGreeceDynamicDataFrame <- data.frame(
+  LRGreeceDate = character(0),
+  LRGreeceHeadline = character(0),
+  LRGreeceWeighting = numeric(0),
+  LRGreeceTag = character(0)
+)
+
+for (i in 0:160) {
+  Sys.sleep(sample(seq(35, 60, by = 0.1), 1)) 
+  
+  CurrentDateGreece <- StartDateGreece + days(i)
+  LRGreeceTargetURL <- DailyLRGreeceHeadline("www.repubblica.it", CurrentDateGreece) 
+  
+  if (is.na(LRGreeceTargetURL)) next
+  
+  LRGreeceWebsite <- read_html(LRGreeceTargetURL)
+  
+  LRGreeceMaxWeighting <- 0
+  LRGreeceMaxWeightingRow <- NULL
+  
+  for (LRGreeceTag in c("h1", "h2", "h3")) {
+    LRGreeceHeadlines <- LRGreeceWebsite %>% html_nodes(LRGreeceTag) %>% html_text(trim = TRUE)
+    
+    for (LRGreeceHeadline in LRGreeceHeadlines) {
+      if (any(str_detect(LRGreeceHeadline, regex(paste(GreeceItalianVectorOfWords, collapse = "|"), ignore_case = TRUE)))) {
+        LRGreeceRawWeighting <- length(LRGreeceHeadlines) - match(LRGreeceHeadline, LRGreeceHeadlines) + 1
+        LRGreeceNormalisedWeighting <- LRGreeceRawWeighting / length(LRGreeceHeadlines)
+        
+        if (LRGreeceNormalisedWeighting > LRGreeceMaxWeighting) {
+          LRGreeceMaxWeighting <- LRGreeceNormalisedWeighting
+          LRGreeceMaxWeightingRow <- data.frame(
+            LRGreeceDate = as.character(CurrentDateGreece),
+            LRGreeceHeadline = LRGreeceHeadline,
+            LRGreeceWeighting = LRGreeceNormalisedWeighting,
+            LRGreeceTag = LRGreeceTag
+          )
+        }
+      }
+    }
+  }
+  
+  if (!is.null(LRGreeceMaxWeightingRow)) {
+    LRGreeceDynamicDataFrame <- rbind(LRGreeceDynamicDataFrame, LRGreeceMaxWeightingRow)
+  } else {
+    LRGreeceNARow <- data.frame(
+      LRGreeceDate = as.character(CurrentDateGreece),
+      LRGreeceHeadline = NA,
+      LRGreeceWeighting = 0,
+      LRGreeceTag = NA
+    )
+    LRGreeceDynamicDataFrame <- rbind(LRGreeceDynamicDataFrame, LRGreeceNARow)
+  }
+}
+
+head(LRGreeceDynamicDataFrame)
+tail(LRGreeceDynamicDataFrame)
+
+```
+
+```{r}
+
+write.xlsx(LRGreeceDynamicDataFrame, "RepubblicaGreece2011.xlsx")
+
+```
+
+
+1.4.2 La Repubblica (2015)
+
+```{r}
+
+StartDateGreece <- as.Date("2015-01-27")
+
+DailyLRGreeceHeadline <- function(domain, date) {
+  Sys.sleep(sample(seq(22.5, 35, by = 0.1), 1))
+  RandomPauseCap <- sample(seq(25, 55, by = 0.1), 1)
+  WebArchiveURL <- "http://web.archive.org/cdx/search/cdx?url="
+  
+  LRGreeceOutputURL <-
+    RETRY("GET", WebArchiveURL, timeout(sample(seq(60, 120, by = 0.1), 1)),
+                query = list(url = domain, timestamp = format(date, "%Y%m%d"),
+                             output = "json"), times = 90, pause_cap = RandomPauseCap)
+  
+  LRGreeceOutputList <-
+    fromJSON(content(LRGreeceOutputURL, "text", encoding = "UTF-8"))
+  
+  LRGreeceHeadlines <- as.data.frame(LRGreeceOutputList[-1, ],
+                                       stringsAsFactors = FALSE)
+  
+  colnames(LRGreeceHeadlines) <- LRGreeceOutputList[1, ]
+  
+  DesiredDateGreece <- format(date, "%Y%m%d")
+  
+  FilteredLRGreeceHeadlines <-
+  LRGreeceHeadlines[grepl(DesiredDateGreece, LRGreeceHeadlines$timestamp,
+                                  fixed = TRUE), ]
+  
+  RandomLRGreeceHeadline <-
+    FilteredLRGreeceHeadlines[sample(1:nrow(FilteredLRGreeceHeadlines), 1), ]
+  
+  TimestampGreece <- RandomLRGreeceHeadline$timestamp
+  
+  OriginalLRGreeceURL <- RandomLRGreeceHeadline$urlkey
+  
+  RegularLRGreeceURL <- gsub("it,repubblica)/", "repubblica.it/",
+                                OriginalLRGreeceURL, fixed = TRUE) 
+  
+  RetrievedLRGreeceURL <- paste0("https://web.archive.org/web/",
+                                   TimestampGreece, "/",
+                                    RegularLRGreeceURL)
+  
+  cat("Retrieved from Repubblica:", RetrievedLRGreeceURL, "\n")
+  
+  return(RetrievedLRGreeceURL)
+}
+
+GreeceItalianVectorOfWords <- c("grec")
+
+LRGreeceDynamicDataFrame <- data.frame(LRGreeceDate = character(0),
+                                          LRGreeceHeadline = character(0),
+                                          LRGreeceWeighting = numeric(0),
+                                          LRGreeceTag = character(0))
+
+for (i in 0:160) {
+  Sys.sleep(sample(seq(35, 60, by = 0.1), 1)) 
+  
+  CurrentDateGreece <- StartDateGreece + days(i)
+  LRGreeceTargetURL <- DailyLRGreeceHeadline("www.repubblica.it",
+                                                   CurrentDateGreece) 
+  
+  LRGreeceWebsite <- read_html(LRGreeceTargetURL)
+  
+  LRGreeceMaxWeighting <- 0
+  LRGreeceMaxWeightingRow <- NULL
+  
+  for (LRGreeceTag in c("h1", "h2", "h3")) {
+    LRGreeceHeadlines <- LRGreeceWebsite %>% html_nodes(LRGreeceTag) %>%
+      html_text(trim = TRUE)
+    
+    for (LRGreeceHeadline in LRGreeceHeadlines) {
+      GreeceItalianVectorOfWordsMatch <- any(str_detect(LRGreeceHeadline, regex(paste(GreeceItalianVectorOfWords, collapse = "|"),
+                                                         ignore_case = TRUE)))
+      
+      if (GreeceItalianVectorOfWordsMatch) {
+        LRGreeceRawWeighting <-
+          length(LRGreeceHeadlines) - match(LRGreeceHeadline,
+                                              LRGreeceHeadlines) + 1
+        LRGreeceNormalisedWeighting <- LRGreeceRawWeighting / length(LRGreeceHeadlines) 
+
+        if (LRGreeceNormalisedWeighting > LRGreeceMaxWeighting) {
+          LRGreeceMaxWeighting <- LRGreeceNormalisedWeighting
+          LRGreeceMaxWeightingRow <- data.frame(LRGreeceDate =
+                                                    as.character(CurrentDateGreece),
+                                                   LRGreeceHeadline =
+                                                    LRGreeceHeadline,
+                                                   LRGreeceWeighting = 
+                                                    LRGreeceNormalisedWeighting, 
+                                                   LRGreeceTag = LRGreeceTag)
+        }
+      }
+    }
+  }
+  
+  if (!is.null(LRGreeceMaxWeightingRow)) {
+    LRGreeceDynamicDataFrame <- rbind(LRGreeceDynamicDataFrame, LRGreeceMaxWeightingRow)
+  } else {
+    LRGreeceNARow <-
+      data.frame(LRGreeceDate = as.character(CurrentDateGreece),
+                                   LRGreeceHeadline = NA,
+                                   LRGreeceWeighting = 0,
+                                   LRGreeceTag = NA)
+    LRGreeceDynamicDataFrame <- rbind(LRGreeceDynamicDataFrame,
+                                         LRGreeceNARow)
+  }
+}
+
+head(LRGreeceDynamicDataFrame)
+tail(LRGreeceDynamicDataFrame)
+
+```
+
+```{r}
+
+write.xlsx(LRGreeceDynamicDataFrame, "RepubblicaGreece2015.xlsx")
+
+```
+
+
+1.5.1 Publico (2011)
+
+```{r}
+
+StartDateGreece <- as.Date("2011-05-25")
+
+DailyPublicoGreeceHeadline <- function(domain, date) {
+  Sys.sleep(sample(seq(22.5, 35, by = 0.1), 1))
+  RandomPauseCap <- sample(seq(25, 55, by = 0.1), 1)
+  WebArchiveURL <- "http://web.archive.org/cdx/search/cdx?url="
+  
+  PublicoGreeceOutputURL <-
+    RETRY("GET", WebArchiveURL, timeout(sample(seq(60, 120, by = 0.1), 1)),
+          query = list(url = domain, 
+                       from = format(date, "%Y%m%d"), 
+                       to = format(date + days(1), "%Y%m%d"), 
+                       output = "json"), 
+          times = 90, pause_cap = RandomPauseCap)
+  
+  PublicoGreeceOutputList <- fromJSON(content(PublicoGreeceOutputURL, "text", encoding = "UTF-8"))
+  
+  if (length(PublicoGreeceOutputList) <= 1) {
+    cat("No snapshots available for", date, "\n")
+    return(NA)
+  }
+  
+  if (!is.matrix(PublicoGreeceOutputList) || ncol(PublicoGreeceOutputList) < 7) {
+    cat("Unexpected API response structure for", date, "\n")
+    return(NA)
+  }
+  
+  ColumnNames <- PublicoGreeceOutputList[1, ]
+  PublicoGreeceHeadlines <- as.data.frame(PublicoGreeceOutputList[-1, ], stringsAsFactors = FALSE)
+  
+  if (length(ColumnNames) != ncol(PublicoGreeceHeadlines)) {
+    cat("Column names do not match the number of columns for", date, "\n")
+    return(NA)
+  }
+  
+  colnames(PublicoGreeceHeadlines) <- ColumnNames
+  
+  DesiredDateGreece <- format(date, "%Y%m%d")
+  
+  FilteredPublicoGreeceHeadlines <- PublicoGreeceHeadlines[
+    substr(PublicoGreeceHeadlines$timestamp, 1, 8) == DesiredDateGreece, ]
+  
+  if (nrow(FilteredPublicoGreeceHeadlines) == 0) {
+    cat("No valid headlines found for", date, "\n")
+    return(NA)
+  }
+  
+  ValidPublicoGreeceHeadlines <- FilteredPublicoGreeceHeadlines[
+    FilteredPublicoGreeceHeadlines$mimetype != "warc/revisit" & 
+    FilteredPublicoGreeceHeadlines$statuscode != "301", ]
+  
+  if (nrow(ValidPublicoGreeceHeadlines) == 0) {
+    cat("No valid content snapshots available for", date, "\n")
+    return(NA)
+  }
+  
+  for (attempt in 1:nrow(ValidPublicoGreeceHeadlines)) {
+    RandomPublicoGreeceHeadline <- ValidPublicoGreeceHeadlines[attempt, ]
+    
+    TimestampGreece <- RandomPublicoGreeceHeadline$timestamp
+    OriginalPublicoGreeceURL <- RandomPublicoGreeceHeadline$urlkey
+    
+    RegularPublicoGreeceURL <- gsub("pt,publico)/", "publico.pt/", OriginalPublicoGreeceURL, fixed = TRUE) 
+    
+    RetrievedPublicoGreeceURL <- paste0("https://web.archive.org/web/",
+                                    TimestampGreece, "/",
+                                    RegularPublicoGreeceURL)
+    
+    SnapshotCheck <- RETRY("GET", RetrievedPublicoGreeceURL, timeout(10), times = 3)
+    if (status_code(SnapshotCheck) == 200) {
+      cat("Retrieved from Publico:", RetrievedPublicoGreeceURL, "\n")
+      return(RetrievedPublicoGreeceURL)
+    } else {
+      cat("Snapshot", RetrievedPublicoGreeceURL, "is a redirect. Trying next snapshot...\n")
+    }
+  }
+  
+  cat("No valid snapshots found for", date, "\n")
+  return(NA)
+}
+
+GreecePortugueseVectorOfWords <- c("grécia", "greg")
+
+PublicoGreeceDynamicDataFrame <- data.frame(
+  PublicoGreeceDate = character(0),
+  PublicoGreeceHeadline = character(0),
+  PublicoGreeceWeighting = numeric(0),
+  PublicoGreeceTag = character(0)
+)
+
+for (i in 0:160) {
+  Sys.sleep(sample(seq(35, 60, by = 0.1), 1)) 
+  
+  CurrentDateGreece <- StartDateGreece + days(i)
+  PublicoGreeceTargetURL <- DailyPublicoGreeceHeadline("www.publico.pt", CurrentDateGreece) 
+  
+  if (is.na(PublicoGreeceTargetURL)) next
+  
+  PublicoGreeceWebsite <- read_html(PublicoGreeceTargetURL)
+  
+  PublicoGreeceMaxWeighting <- 0
+  PublicoGreeceMaxWeightingRow <- NULL
+  
+  for (PublicoGreeceTag in c("h1", "h2", "h3")) {
+    PublicoGreeceHeadlines <- PublicoGreeceWebsite %>% html_nodes(PublicoGreeceTag) %>% html_text(trim = TRUE)
+    
+    for (PublicoGreeceHeadline in PublicoGreeceHeadlines) {
+      if (any(str_detect(PublicoGreeceHeadline, regex(paste(GreecePortugueseVectorOfWords, collapse = "|"), ignore_case = TRUE)))) {
+        PublicoGreeceRawWeighting <- length(PublicoGreeceHeadlines) - match(PublicoGreeceHeadline, PublicoGreeceHeadlines) + 1
+        PublicoGreeceNormalisedWeighting <- PublicoGreeceRawWeighting / length(PublicoGreeceHeadlines)
+        
+        if (PublicoGreeceNormalisedWeighting > PublicoGreeceMaxWeighting) {
+          PublicoGreeceMaxWeighting <- PublicoGreeceNormalisedWeighting
+          PublicoGreeceMaxWeightingRow <- data.frame(
+            PublicoGreeceDate = as.character(CurrentDateGreece),
+            PublicoGreeceHeadline = PublicoGreeceHeadline,
+            PublicoGreeceWeighting = PublicoGreeceNormalisedWeighting,
+            PublicoGreeceTag = PublicoGreeceTag
+          )
+        }
+      }
+    }
+  }
+  
+  if (!is.null(PublicoGreeceMaxWeightingRow)) {
+    PublicoGreeceDynamicDataFrame <- rbind(PublicoGreeceDynamicDataFrame, PublicoGreeceMaxWeightingRow)
+  } else {
+    PublicoGreeceNARow <- data.frame(
+      PublicoGreeceDate = as.character(CurrentDateGreece),
+      PublicoGreeceHeadline = NA,
+      PublicoGreeceWeighting = 0,
+      PublicoGreeceTag = NA
+    )
+    PublicoGreeceDynamicDataFrame <- rbind(PublicoGreeceDynamicDataFrame, PublicoGreeceNARow)
+  }
+}
+
+head(PublicoGreeceDynamicDataFrame)
+tail(PublicoGreeceDynamicDataFrame)
+
+```
+
+```{r}
+
+write.xlsx(PublicoGreeceDynamicDataFrame, "PublicoGreece2011.xlsx")
+
+```
+
+
+1.5.2 Publico (2015)
+
+```{r}
+
+StartDateGreece <- as.Date("2015-01-27")
+
+DailyPublicoGreeceHeadline <- function(domain, date) {
+  Sys.sleep(sample(seq(22.5, 35, by = 0.1), 1))
+  RandomPauseCap <- sample(seq(25, 55, by = 0.1), 1)
+  WebArchiveURL <- "http://web.archive.org/cdx/search/cdx?url="
+  
+  PublicoGreeceOutputURL <-
+    RETRY("GET", WebArchiveURL, timeout(sample(seq(60, 120, by = 0.1), 1)),
+          query = list(url = domain, 
+                       from = format(date, "%Y%m%d"), 
+                       to = format(date + days(1), "%Y%m%d"), 
+                       output = "json"), 
+          times = 90, pause_cap = RandomPauseCap)
+  
+  PublicoGreeceOutputList <- fromJSON(content(PublicoGreeceOutputURL, "text", encoding = "UTF-8"))
+  
+  if (length(PublicoGreeceOutputList) <= 1) {
+    cat("No snapshots available for", date, "\n")
+    return(NA)
+  }
+  
+  if (!is.matrix(PublicoGreeceOutputList) || ncol(PublicoGreeceOutputList) < 7) {
+    cat("Unexpected API response structure for", date, "\n")
+    return(NA)
+  }
+  
+  ColumnNames <- PublicoGreeceOutputList[1, ]
+  PublicoGreeceHeadlines <- as.data.frame(PublicoGreeceOutputList[-1, ], stringsAsFactors = FALSE)
+  
+  if (length(ColumnNames) != ncol(PublicoGreeceHeadlines)) {
+    cat("Column names do not match the number of columns for", date, "\n")
+    return(NA)
+  }
+  
+  colnames(PublicoGreeceHeadlines) <- ColumnNames
+  
+  DesiredDateGreece <- format(date, "%Y%m%d")
+  
+  FilteredPublicoGreeceHeadlines <- PublicoGreeceHeadlines[
+    substr(PublicoGreeceHeadlines$timestamp, 1, 8) == DesiredDateGreece, ]
+  
+  if (nrow(FilteredPublicoGreeceHeadlines) == 0) {
+    cat("No valid headlines found for", date, "\n")
+    return(NA)
+  }
+  
+  ValidPublicoGreeceHeadlines <- FilteredPublicoGreeceHeadlines[
+    FilteredPublicoGreeceHeadlines$mimetype != "warc/revisit" & 
+    FilteredPublicoGreeceHeadlines$statuscode != "301", ]
+  
+  if (nrow(ValidPublicoGreeceHeadlines) == 0) {
+    cat("No valid content snapshots available for", date, "\n")
+    return(NA)
+  }
+  
+  for (attempt in 1:nrow(ValidPublicoGreeceHeadlines)) {
+    RandomPublicoGreeceHeadline <- ValidPublicoGreeceHeadlines[attempt, ]
+    
+    TimestampGreece <- RandomPublicoGreeceHeadline$timestamp
+    OriginalPublicoGreeceURL <- RandomPublicoGreeceHeadline$urlkey
+    
+    RegularPublicoGreeceURL <- gsub("pt,publico)/", "publico.pt/", OriginalPublicoGreeceURL, fixed = TRUE) 
+    
+    RetrievedPublicoGreeceURL <- paste0("https://web.archive.org/web/",
+                                    TimestampGreece, "/",
+                                    RegularPublicoGreeceURL)
+    
+    SnapshotCheck <- RETRY("GET", RetrievedPublicoGreeceURL, timeout(10), times = 3)
+    if (status_code(SnapshotCheck) == 200) {
+      cat("Retrieved from Publico:", RetrievedPublicoGreeceURL, "\n")
+      return(RetrievedPublicoGreeceURL)
+    } else {
+      cat("Snapshot", RetrievedPublicoGreeceURL, "is a redirect. Trying next snapshot...\n")
+    }
+  }
+  
+  cat("No valid snapshots found for", date, "\n")
+  return(NA)
+}
+
+GreecePortugueseVectorOfWords <- c("grécia", "greg")
+
+PublicoGreeceDynamicDataFrame <- data.frame(
+  PublicoGreeceDate = character(0),
+  PublicoGreeceHeadline = character(0),
+  PublicoGreeceWeighting = numeric(0),
+  PublicoGreeceTag = character(0)
+)
+
+for (i in 0:160) {
+  Sys.sleep(sample(seq(35, 60, by = 0.1), 1)) 
+  
+  CurrentDateGreece <- StartDateGreece + days(i)
+  PublicoGreeceTargetURL <- DailyPublicoGreeceHeadline("www.publico.pt", CurrentDateGreece) 
+  
+  if (is.na(PublicoGreeceTargetURL)) next
+  
+  PublicoGreeceWebsite <- read_html(PublicoGreeceTargetURL)
+  
+  PublicoGreeceMaxWeighting <- 0
+  PublicoGreeceMaxWeightingRow <- NULL
+  
+  for (PublicoGreeceTag in c("h1", "h2", "h3")) {
+    PublicoGreeceHeadlines <- PublicoGreeceWebsite %>% html_nodes(PublicoGreeceTag) %>% html_text(trim = TRUE)
+    
+    for (PublicoGreeceHeadline in PublicoGreeceHeadlines) {
+      if (any(str_detect(PublicoGreeceHeadline, regex(paste(GreecePortugueseVectorOfWords, collapse = "|"), ignore_case = TRUE)))) {
+        PublicoGreeceRawWeighting <- length(PublicoGreeceHeadlines) - match(PublicoGreeceHeadline, PublicoGreeceHeadlines) + 1
+        PublicoGreeceNormalisedWeighting <- PublicoGreeceRawWeighting / length(PublicoGreeceHeadlines)
+        
+        if (PublicoGreeceNormalisedWeighting > PublicoGreeceMaxWeighting) {
+          PublicoGreeceMaxWeighting <- PublicoGreeceNormalisedWeighting
+          PublicoGreeceMaxWeightingRow <- data.frame(
+            PublicoGreeceDate = as.character(CurrentDateGreece),
+            PublicoGreeceHeadline = PublicoGreeceHeadline,
+            PublicoGreeceWeighting = PublicoGreeceNormalisedWeighting,
+            PublicoGreeceTag = PublicoGreeceTag
+          )
+        }
+      }
+    }
+  }
+  
+  if (!is.null(PublicoGreeceMaxWeightingRow)) {
+    PublicoGreeceDynamicDataFrame <- rbind(PublicoGreeceDynamicDataFrame, PublicoGreeceMaxWeightingRow)
+  } else {
+    PublicoGreeceNARow <- data.frame(
+      PublicoGreeceDate = as.character(CurrentDateGreece),
+      PublicoGreeceHeadline = NA,
+      PublicoGreeceWeighting = 0,
+      PublicoGreeceTag = NA
+    )
+    PublicoGreeceDynamicDataFrame <- rbind(PublicoGreeceDynamicDataFrame, PublicoGreeceNARow)
+  }
+}
+
+head(PublicoGreeceDynamicDataFrame)
+tail(PublicoGreeceDynamicDataFrame)
+
+```
+
+```{r}
+
+write.xlsx(PublicoGreeceDynamicDataFrame, "PublicoGreece2015.xlsx")
+
+```
+
+
+1.6.1 Irish Times (2011)
+
+```{r}
+
+StartDateGreece <- as.Date("2011-05-25")
+
+DailyITGreeceHeadline <- function(domain, date) {
+  Sys.sleep(sample(seq(22.5, 35, by = 0.1), 1))
+  RandomPauseCap <- sample(seq(25, 55, by = 0.1), 1)
+  WebArchiveURL <- "http://web.archive.org/cdx/search/cdx?url="
+  
+  ITGreeceOutputURL <-
+    RETRY("GET", WebArchiveURL, timeout(sample(seq(60, 120, by = 0.1), 1)),
+          query = list(url = domain, 
+                       from = format(date, "%Y%m%d"), 
+                       to = format(date + days(1), "%Y%m%d"), 
+                       output = "json"), 
+          times = 90, pause_cap = RandomPauseCap)
+  
+  ITGreeceOutputList <- fromJSON(content(ITGreeceOutputURL, "text", encoding = "UTF-8"))
+  
+  if (length(ITGreeceOutputList) <= 1) {
+    cat("No snapshots available for", date, "\n")
+    return(NA)
+  }
+  
+  if (!is.matrix(ITGreeceOutputList) || ncol(ITGreeceOutputList) < 7) {
+    cat("Unexpected API response structure for", date, "\n")
+    return(NA)
+  }
+  
+  ColumnNames <- ITGreeceOutputList[1, ]
+  ITGreeceHeadlines <- as.data.frame(ITGreeceOutputList[-1, ], stringsAsFactors = FALSE)
+  
+  if (length(ColumnNames) != ncol(ITGreeceHeadlines)) {
+    cat("Column names do not match the number of columns for", date, "\n")
+    return(NA)
+  }
+  
+  colnames(ITGreeceHeadlines) <- ColumnNames
+  
+  DesiredDateGreece <- format(date, "%Y%m%d")
+  
+  FilteredITGreeceHeadlines <- ITGreeceHeadlines[
+    substr(ITGreeceHeadlines$timestamp, 1, 8) == DesiredDateGreece, ]
+  
+  if (nrow(FilteredITGreeceHeadlines) == 0) {
+    cat("No valid headlines found for", date, "\n")
+    return(NA)
+  }
+  
+  ValidITGreeceHeadlines <- FilteredITGreeceHeadlines[
+    FilteredITGreeceHeadlines$mimetype != "warc/revisit" & 
+    FilteredITGreeceHeadlines$statuscode != "301", ]
+  
+  if (nrow(ValidITGreeceHeadlines) == 0) {
+    cat("No valid content snapshots available for", date, "\n")
+    return(NA)
+  }
+  
+  for (attempt in 1:nrow(ValidITGreeceHeadlines)) {
+    RandomITGreeceHeadline <- ValidITGreeceHeadlines[attempt, ]
+    
+    TimestampGreece <- RandomITGreeceHeadline$timestamp
+    OriginalITGreeceURL <- RandomITGreeceHeadline$urlkey
+    
+    RegularITGreeceURL <- gsub("com,irishtimes)/", "irishtimes.com/", OriginalITGreeceURL, fixed = TRUE) 
+    
+    RetrievedITGreeceURL <- paste0("https://web.archive.org/web/",
+                                    TimestampGreece, "/",
+                                    RegularITGreeceURL)
+    
+    SnapshotCheck <- RETRY("GET", RetrievedITGreeceURL, timeout(10), times = 3)
+    if (status_code(SnapshotCheck) == 200) {
+      cat("Retrieved from IT:", RetrievedITGreeceURL, "\n")
+      return(RetrievedITGreeceURL)
+    } else {
+      cat("Snapshot", RetrievedITGreeceURL, "is a redirect. Trying next snapshot...\n")
+    }
+  }
+  
+  cat("No valid snapshots found for", date, "\n")
+  return(NA)
+}
+
+GreeceEnglishVectorOfWords <- c("Greece", "greek")
+
+ITGreeceDynamicDataFrame <- data.frame(
+  ITGreeceDate = character(0),
+  ITGreeceHeadline = character(0),
+  ITGreeceWeighting = numeric(0),
+  ITGreeceTag = character(0)
+)
+
+for (i in 0:160) {
+  Sys.sleep(sample(seq(15, 30, by = 0.1), 1)) 
+  
+  CurrentDateGreece <- StartDateGreece + days(i)
+  ITGreeceTargetURL <- DailyITGreeceHeadline("www.irishtimes.com", CurrentDateGreece) 
+  
+  if (is.na(ITGreeceTargetURL)) next
+  
+  ITGreeceWebsite <- read_html(ITGreeceTargetURL)
+  
+  ITGreeceMaxWeighting <- 0
+  ITGreeceMaxWeightingRow <- NULL
+  
+  for (ITGreeceTag in c("h1", "h2", "h3")) {
+    ITGreeceHeadlines <- ITGreeceWebsite %>% html_nodes(paste0("span.", ITGreeceTag)) %>% html_text(trim = TRUE)
+    
+    if (length(ITGreeceHeadlines) == 0) next
+    
+    for (ITGreeceHeadline in ITGreeceHeadlines) {
+      if (any(str_detect(ITGreeceHeadline, regex(paste(GreeceEnglishVectorOfWords, collapse = "|"), ignore_case = TRUE)))) {
+        ITGreeceRawWeighting <- length(ITGreeceHeadlines) - match(ITGreeceHeadline, ITGreeceHeadlines) + 1
+        ITGreeceNormalisedWeighting <- ITGreeceRawWeighting / length(ITGreeceHeadlines)
+        
+        if (ITGreeceNormalisedWeighting > ITGreeceMaxWeighting) {
+          ITGreeceMaxWeighting <- ITGreeceNormalisedWeighting
+          ITGreeceMaxWeightingRow <- data.frame(
+            ITGreeceDate = as.character(CurrentDateGreece),
+            ITGreeceHeadline = ITGreeceHeadline,
+            ITGreeceWeighting = ITGreeceNormalisedWeighting,
+            ITGreeceTag = ITGreeceTag
+          )
+        }
+      }
+    }
+  }
+  
+  ITGreeceDynamicDataFrame <- rbind(ITGreeceDynamicDataFrame, ITGreeceMaxWeightingRow)
+}
+
+head(ITGreeceDynamicDataFrame)
+tail(ITGreeceDynamicDataFrame)
+
+```
+
+```{r}
+
+write.xlsx(ITGreeceDynamicDataFrame, "IrishTimesGreece2011.xlsx")
+
+```
+
+
+1.6.2 Irish Times (2015)
+
+```{r}
+
+StartDateGreece <- as.Date("2015-01-27")
+
+DailyITGreeceHeadline <- function(domain, date) {
+  Sys.sleep(sample(seq(22.5, 35, by = 0.1), 1))
+  RandomPauseCap <- sample(seq(25, 55, by = 0.1), 1)
+  WebArchiveURL <- "http://web.archive.org/cdx/search/cdx?url="
+  
+  ITGreeceOutputURL <-
+    RETRY("GET", WebArchiveURL, timeout(sample(seq(60, 120, by = 0.1), 1)),
+          query = list(url = domain, 
+                       from = format(date, "%Y%m%d"), 
+                       to = format(date + days(1), "%Y%m%d"), 
+                       output = "json"), 
+          times = 90, pause_cap = RandomPauseCap)
+  
+  ITGreeceOutputList <- fromJSON(content(ITGreeceOutputURL, "text", encoding = "UTF-8"))
+  
+  if (length(ITGreeceOutputList) <= 1) {
+    cat("No snapshots available for", date, "\n")
+    return(NA)
+  }
+  
+  if (!is.matrix(ITGreeceOutputList) || ncol(ITGreeceOutputList) < 7) {
+    cat("Unexpected API response structure for", date, "\n")
+    return(NA)
+  }
+  
+  ColumnNames <- ITGreeceOutputList[1, ]
+  ITGreeceHeadlines <- as.data.frame(ITGreeceOutputList[-1, ], stringsAsFactors = FALSE)
+  
+  if (length(ColumnNames) != ncol(ITGreeceHeadlines)) {
+    cat("Column names do not match the number of columns for", date, "\n")
+    return(NA)
+  }
+  
+  colnames(ITGreeceHeadlines) <- ColumnNames
+  
+  DesiredDateGreece <- format(date, "%Y%m%d")
+  
+  FilteredITGreeceHeadlines <- ITGreeceHeadlines[
+    substr(ITGreeceHeadlines$timestamp, 1, 8) == DesiredDateGreece, ]
+  
+  if (nrow(FilteredITGreeceHeadlines) == 0) {
+    cat("No valid headlines found for", date, "\n")
+    return(NA)
+  }
+  
+  ValidITGreeceHeadlines <- FilteredITGreeceHeadlines[
+    FilteredITGreeceHeadlines$mimetype != "warc/revisit" & 
+    FilteredITGreeceHeadlines$statuscode != "301", ]
+  
+  if (nrow(ValidITGreeceHeadlines) == 0) {
+    cat("No valid content snapshots available for", date, "\n")
+    return(NA)
+  }
+  
+  for (attempt in 1:nrow(ValidITGreeceHeadlines)) {
+    RandomITGreeceHeadline <- ValidITGreeceHeadlines[attempt, ]
+    
+    TimestampGreece <- RandomITGreeceHeadline$timestamp
+    OriginalITGreeceURL <- RandomITGreeceHeadline$urlkey
+    
+    RegularITGreeceURL <- gsub("com,irishtimes)/", "irishtimes.com/", OriginalITGreeceURL, fixed = TRUE) 
+    
+    RetrievedITGreeceURL <- paste0("https://web.archive.org/web/",
+                                    TimestampGreece, "/",
+                                    RegularITGreeceURL)
+    
+    SnapshotCheck <- RETRY("GET", RetrievedITGreeceURL, timeout(10), times = 3)
+    if (status_code(SnapshotCheck) == 200) {
+      cat("Retrieved from IT:", RetrievedITGreeceURL, "\n")
+      return(RetrievedITGreeceURL)
+    } else {
+      cat("Snapshot", RetrievedITGreeceURL, "is a redirect. Trying next snapshot...\n")
+    }
+  }
+  
+  cat("No valid snapshots found for", date, "\n")
+  return(NA)
+}
+
+GreeceEnglishVectorOfWords <- c("Greece", "greek")
+
+ITGreeceDynamicDataFrame <- data.frame(
+  ITGreeceDate = character(0),
+  ITGreeceHeadline = character(0),
+  ITGreeceWeighting = numeric(0),
+  ITGreeceTag = character(0)
+)
+
+for (i in 0:160) {
+  Sys.sleep(sample(seq(15, 30, by = 0.1), 1)) 
+  
+  CurrentDateGreece <- StartDateGreece + days(i)
+  ITGreeceTargetURL <- DailyITGreeceHeadline("www.irishtimes.com", CurrentDateGreece) 
+  
+  if (is.na(ITGreeceTargetURL)) next
+  
+  ITGreeceWebsite <- read_html(ITGreeceTargetURL)
+  
+  ITGreeceMaxWeighting <- 0
+  ITGreeceMaxWeightingRow <- NULL
+  
+  for (ITGreeceTag in c("h1", "h2", "h3")) {
+    ITGreeceHeadlines <- ITGreeceWebsite %>% html_nodes(paste0("span.", ITGreeceTag)) %>% html_text(trim = TRUE)
+    
+    if (length(ITGreeceHeadlines) == 0) next
+    
+    for (ITGreeceHeadline in ITGreeceHeadlines) {
+      if (any(str_detect(ITGreeceHeadline, regex(paste(GreeceEnglishVectorOfWords, collapse = "|"), ignore_case = TRUE)))) {
+        ITGreeceRawWeighting <- length(ITGreeceHeadlines) - match(ITGreeceHeadline, ITGreeceHeadlines) + 1
+        ITGreeceNormalisedWeighting <- ITGreeceRawWeighting / length(ITGreeceHeadlines)
+        
+        if (ITGreeceNormalisedWeighting > ITGreeceMaxWeighting) {
+          ITGreeceMaxWeighting <- ITGreeceNormalisedWeighting
+          ITGreeceMaxWeightingRow <- data.frame(
+            ITGreeceDate = as.character(CurrentDateGreece),
+            ITGreeceHeadline = ITGreeceHeadline,
+            ITGreeceWeighting = ITGreeceNormalisedWeighting,
+            ITGreeceTag = ITGreeceTag
+          )
+        }
+      }
+    }
+  }
+  
+  ITGreeceDynamicDataFrame <- rbind(ITGreeceDynamicDataFrame, ITGreeceMaxWeightingRow)
+}
+
+head(ITGreeceDynamicDataFrame)
+tail(ITGreeceDynamicDataFrame)
+
+```
+
+```{r}
+
+write.xlsx(ITGreeceDynamicDataFrame, "IrishTimesGreece2015.xlsx")
+
+```
+
+
+***Part II - Sentiment and Frequency Analysis***
+
+2.1.1 El País (2011)
+
+```{r}
+
+ElPais2011 <- read_excel("CleanElPaisGreece2011.xlsx")
+
+ElPais2011Sentiment <- get_sentiment(ElPais2011$ElPaisHeadline, method = "nrc", language = "spanish")
+
+head(ElPais2011Sentiment)
+
+summary(ElPais2011Sentiment)
+
+hist(ElPais2011Sentiment, breaks = 20, col = "forestgreen",
+     main = "Sentiment Distribution in El País (2011) Headlines",
+     xlab = "Sentiment Score", ylab = "Frequency")
+
+ElPais2011OverallSentiment <- mean(ElPais2011Sentiment)
+print(paste("Overall Sentiment Score for El País (2011):", ElPais2011OverallSentiment))
+
+ElPais2011Emotions <- get_nrc_sentiment(ElPais2011$ElPaisHeadline, language = "spanish")
+print(ElPais2011Emotions)
+
+barplot(colSums(ElPais2011Emotions), las = 2, col = rainbow(10),
+        main = "Emotion Distribution in El País (2011) Headlines",
+        ylab = "Frequency", xlab = "Emotions")
+
+```
+Sentiment score: -0.24
+
+
+2.1.2 El País (2015)
+
+```{r}
+
+ElPais2015 <- read_excel("CleanElPaisGreece2015.xlsx")
+
+ElPais2015Sentiment <- get_sentiment(ElPais2015$ElPaisHeadline, method = "nrc", language = "spanish")
+
+head(ElPais2015Sentiment)
+
+summary(ElPais2015Sentiment)
+
+hist(ElPais2015Sentiment, breaks = 20, col = "forestgreen",
+     main = "Sentiment Distribution in El País (2015) Headlines",
+     xlab = "Sentiment Score", ylab = "Frequency")
+
+ElPais2015OverallSentiment <- mean(ElPais2015Sentiment)
+print(paste("Overall Sentiment Score for El País (2015):", ElPais2015OverallSentiment))
+
+ElPais2015Emotions <- get_nrc_sentiment(ElPais2015$ElPaisHeadline, language = "spanish")
+print(ElPais2015Emotions)
+
+barplot(colSums(ElPais2015Emotions), las = 2, col = rainbow(10),
+        main = "Emotion Distribution in El País (2015) Headlines",
+        ylab = "Frequency", xlab = "Emotions")
+
+```
+Sentiment score: -0.29
+
+
+2.2.1 El Mundo (2011)
+
+```{r}
+
+ElMundo2011 <- read_excel("CleanElMundoGreece2011.xlsx")
+
+ElMundo2011Sentiment <- get_sentiment(ElMundo2011$ElMundoHeadline, method = "nrc", language = "spanish")
+
+head(ElMundo2011Sentiment)
+
+summary(ElMundo2011Sentiment)
+
+hist(ElMundo2011Sentiment, breaks = 20, col = "steelblue",
+     main = "Sentiment Distribution in El Mundo (2011) Headlines",
+     xlab = "Sentiment Score", ylab = "Frequency")
+
+ElMundo2011OverallSentiment <- mean(ElMundo2011Sentiment)
+print(paste("Overall Sentiment Score for El Mundo (2011):", ElMundo2011OverallSentiment))
+
+ElMundo2011Emotions <- get_nrc_sentiment(ElMundo2011$ElMundoHeadline, language = "spanish")
+print(ElMundo2011Emotions)
+
+barplot(colSums(ElMundo2011Emotions), las = 2, col = rainbow(10),
+        main = "Emotion Distribution in El Mundo (2011) Headlines",
+        ylab = "Frequency", xlab = "Emotions")
+
+```
+Sentiment score: -0.05
+
+
+2.2.2 El Mundo (2015)
+
+```{r}
+
+ElMundo2015 <- read_excel("CleanElMundoGreece2015.xlsx")
+
+ElMundo2015Sentiment <- get_sentiment(ElMundo2015$ElMundoHeadline, method = "nrc", language = "spanish")
+
+head(ElMundo2015Sentiment)
+
+summary(ElMundo2015Sentiment)
+
+hist(ElMundo2015Sentiment, breaks = 20, col = "steelblue",
+     main = "Sentiment Distribution in El Mundo (2015) Headlines",
+     xlab = "Sentiment Score", ylab = "Frequency")
+
+ElMundo2015OverallSentiment <- mean(ElMundo2015Sentiment)
+print(paste("Overall Sentiment Score for El Mundo (2015):", ElMundo2015OverallSentiment))
+
+ElMundo2015Emotions <- get_nrc_sentiment(ElMundo2015$ElMundoHeadline, language = "spanish")
+print(ElMundo2015Emotions)
+
+barplot(colSums(ElMundo2015Emotions), las = 2, col = rainbow(10),
+        main = "Emotion Distribution in El Mundo (2015) Headlines",
+        ylab = "Frequency", xlab = "Emotions")
+
+```
+Sentiment score: -0.20
+
+
+2.3 Corriere della Serra (2015)
+
+```{r}
+
+Corriere2015 <- read_excel("CleanCorriereGreece2015.xlsx")
+
+Corriere2015Sentiment <- get_sentiment(Corriere2015$CDSHeadline, method = "nrc", language = "italian")
+
+head(Corriere2015Sentiment)
+
+summary(Corriere2015Sentiment)
+
+hist(Corriere2015Sentiment, breaks = 20, col = "palegreen",
+     main = "Sentiment Distribution in Corriere della Sera (2015) Headlines",
+     xlab = "Sentiment Score", ylab = "Frequency")
+
+Corriere2015OverallSentiment <- mean(Corriere2015Sentiment)
+print(paste("Overall Sentiment Score for Corriere della Sera (2015):", Corriere2015OverallSentiment))
+
+Corriere2015Emotions <- get_nrc_sentiment(Corriere2015$CDSHeadline, language = "italian")
+print(Corriere2015Emotions)
+
+barplot(colSums(Corriere2015Emotions), las = 2, col = rainbow(10),
+        main = "Emotion Distribution in Corriere della Sera (2015) Headlines",
+        ylab = "Frequency", xlab = "Emotions")
+
+```
+Sentiment score: -0.02
+
+
+2.4 La Repubblica (2015)
+
+```{r}
+
+Repubblica2015 <- read_excel("CleanRepubblicaGreece2015.xlsx")
+
+Repubblica2015Sentiment <- get_sentiment(Repubblica2015$LRHeadline, method = "nrc", language = "italian")
+
+head(Repubblica2015Sentiment)
+
+summary(Repubblica2015Sentiment)
+
+hist(Repubblica2015Sentiment, breaks = 20, col = "gray",
+     main = "Sentiment Distribution in La Repubblica (2015) Headlines",
+     xlab = "Sentiment Score", ylab = "Frequency")
+
+Repubblica2015OverallSentiment <- mean(Repubblica2015Sentiment)
+print(paste("Overall Sentiment Score for La Repubblica (2015):", Repubblica2015OverallSentiment))
+
+Repubblica2015Emotions <- get_nrc_sentiment(Repubblica2015$LRHeadline, language = "italian")
+print(Repubblica2015Emotions)
+
+barplot(colSums(Repubblica2015Emotions), las = 2, col = rainbow(10),
+        main = "Emotion Distribution in La Repubblica (2015) Headlines",
+        ylab = "Frequency", xlab = "Emotions")
+
+```
+Sentiment score: 0.01
+
+
+2.5.1 Publico (2011)
+
+```{r}
+
+Publico2011 <- read_excel("CleanPublicoGreece2011.xlsx")
+
+Publico2011Sentiment <- get_sentiment(Publico2011$PublicoHeadline, method = "nrc", language = "portuguese")
+
+head(Publico2011Sentiment)
+
+summary(Publico2011Sentiment)
+
+hist(Publico2011Sentiment, breaks = 20, col = "darkred",
+     main = "Sentiment Distribution in Publico (2011) Headlines",
+     xlab = "Sentiment Score", ylab = "Frequency")
+
+Publico2011OverallSentiment <- mean(Publico2011Sentiment)
+print(paste("Overall Sentiment Score for Publico (2011):", Publico2011OverallSentiment))
+
+Publico2011Emotions <- get_nrc_sentiment(Publico2011$PublicoHeadline, language = "portuguese")
+print(Publico2011Emotions)
+
+barplot(colSums(Publico2011Emotions), las = 2, col = rainbow(10),
+        main = "Emotion Distribution in Publico (2011) Headlines",
+        ylab = "Frequency", xlab = "Emotions")
+
+```
+Sentiment score: -0.04
+
+
+2.5.2 Publico (2015)
+
+```{r}
+
+Publico2015 <- read_excel("CleanPublicoGreece2015.xlsx")
+
+Publico2015Sentiment <- get_sentiment(Publico2015$PublicoHeadline, method = "nrc", language = "portuguese")
+
+head(Publico2015Sentiment)
+
+summary(Publico2015Sentiment)
+
+hist(Publico2015Sentiment, breaks = 20, col = "darkred",
+     main = "Sentiment Distribution in Publico (2015) Headlines",
+     xlab = "Sentiment Score", ylab = "Frequency")
+
+Publico2015OverallSentiment <- mean(Publico2015Sentiment)
+print(paste("Overall Sentiment Score for Publico (2015):", Publico2015OverallSentiment))
+
+Publico2015Emotions <- get_nrc_sentiment(Publico2015$PublicoHeadline, language = "portuguese")
+print(Publico2015Emotions)
+
+barplot(colSums(Publico2015Emotions), las = 2, col = rainbow(10),
+        main = "Emotion Distribution in Publico (2015) Headlines",
+        ylab = "Frequency", xlab = "Emotions")
+
+```
+Sentiment score: -0.19
+
+
+2.6.1 Irish Times (2011)
+
+```{r}
+
+IT2011 <- read_excel("IrishTimesGreece2011.xlsx")
+
+IT2011Sentiment <- get_sentiment(IT2011$ITGreeceHeadline, method = "nrc", language = "english")
+
+head(IT2011Sentiment)
+
+summary(IT2011Sentiment)
+
+hist(IT2011Sentiment, breaks = 20, col = "black",
+     main = "Sentiment Distribution in Irish Times (2011) Headlines",
+     xlab = "Sentiment Score", ylab = "Frequency")
+
+IT2011OverallSentiment <- mean(IT2011Sentiment)
+print(paste("Overall Sentiment Score for Irish Times (2011):", IT2011OverallSentiment))
+
+IT2011Emotions <- get_nrc_sentiment(IT2011$ITGreeceHeadline, language = "english")
+print(IT2011Emotions)
+
+barplot(colSums(IT2011Emotions), las = 2, col = rainbow(10),
+        main = "Emotion Distribution in Irish Times (2011) Headlines",
+        ylab = "Frequency", xlab = "Emotions")
+
+```
+Sentiment score: -0.16
+
+
+2.6.2 Irish Times (2015)
+
+```{r}
+
+IT2015 <- read_excel("IrishTimesGreece2015.xlsx")
+
+IT2015Sentiment <- get_sentiment(IT2015$ITGreeceHeadline, method = "nrc", language = "english")
+
+head(IT2015Sentiment)
+
+summary(IT2015Sentiment)
+
+hist(IT2015Sentiment, breaks = 20, col = "black",
+     main = "Sentiment Distribution in Irish Times (2015) Headlines",
+     xlab = "Sentiment Score", ylab = "Frequency")
+
+IT2015OverallSentiment <- mean(IT2015Sentiment)
+print(paste("Overall Sentiment Score for Irish Times (2015):", IT2015OverallSentiment))
+
+IT2015Emotions <- get_nrc_sentiment(IT2015$ITGreeceHeadline, language = "english")
+print(IT2015Emotions)
+
+barplot(colSums(IT2015Emotions), las = 2, col = rainbow(10),
+        main = "Emotion Distribution in Irish Times (2015) Headlines",
+        ylab = "Frequency", xlab = "Emotions")
+
+```
+Sentiment score: -0.04
