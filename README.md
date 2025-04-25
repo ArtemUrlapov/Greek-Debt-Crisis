@@ -1,1 +1,1 @@
-R code and Excel files for the academic research paper "Socioeconomic Temporality and Media Framing of the Greek Debt Crisis in the EU South-Eastern Periphery" by Artem Urlapov Sedova and Rafael Castro Balaguer at Universidad Autónoma de Madrid.
+R code and Excel files for the academic research paper "Socioeconomic Temporality and Media Framing of the Greek Debt Crisis in the EU South-Western Periphery" (tentative title) by Artem Urlapov Sedova and Rafael Castro Balaguer at Universidad Autónoma de Madrid.
